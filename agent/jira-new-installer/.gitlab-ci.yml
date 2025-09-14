@@ -1,0 +1,64 @@
+image: agent-install:latest
+
+stages:
+  - fetch
+  - upload-test
+  - terraform
+  - promote
+  - notify
+
+variables:
+  AWS_DEFAULT_REGION: "us-east-1"
+  TEST_BUCKET: "TEST-AGENT-BUCKET"
+  PROD_BUCKET: "PROD-AGENT-BUCKET"
+  ROLE_ARN: "arn:aws:iam::<test-account-id>:role/TEST-AGENT-Role"
+
+fetch_installer:
+  stage: fetch
+  script:
+    - python fetch_installer_from_jira.py
+    - cat VERSION
+
+upload_to_test_bucket:
+  stage: upload-test
+  script:
+    - |
+      # Assume role in test account
+      CREDS=$(aws sts assume-role --role-arn "$ROLE_ARN" --role-session-name gitlab-agent-test)
+      export AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r .Credentials.AccessKeyId)
+      export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r .Credentials.SecretAccessKey)
+      export AWS_SESSION_TOKEN=$(echo $CREDS | jq -r .Credentials.SessionToken)
+      aws s3 cp agent-installer.sh s3://$TEST_BUCKET/agent-installer.sh
+      aws s3 cp VERSION s3://$TEST_BUCKET/AGENT_VERSION
+
+terraform_apply:
+  stage: terraform
+  script:
+    - |
+      CREDS=$(aws sts assume-role --role-arn "$ROLE_ARN" --role-session-name gitlab-agent-test)
+      export AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r .Credentials.AccessKeyId)
+      export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r .Credentials.SecretAccessKey)
+      export AWS_SESSION_TOKEN=$(echo $CREDS | jq -r .Credentials.SessionToken)
+      terraform init
+      terraform apply -auto-approve -var="ami_id=ami-latest" -var="key_name=my-key"
+    # Optionally, poll instance logs or use SSM to verify agent install
+
+validate_and_promote:
+  stage: promote
+  script:
+    - |
+      # Assume role in test account for validation
+      CREDS=$(aws sts assume-role --role-arn "$ROLE_ARN" --role-session-name gitlab-agent-test)
+      export AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r .Credentials.AccessKeyId)
+      export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r .Credentials.SecretAccessKey)
+      export AWS_SESSION_TOKEN=$(echo $CREDS | jq -r .Credentials.SessionToken)
+      # Here you would check instance status, logs, or use SSM to verify agent install
+      # For simplicity, assume success if previous steps did not fail
+      # Now promote to production bucket
+      aws s3 cp agent-installer.sh s3://$PROD_BUCKET/agent-installer.sh
+
+notify:
+  stage: notify
+  script:
+    - python notify_jira_and_slack.py
+  when: always

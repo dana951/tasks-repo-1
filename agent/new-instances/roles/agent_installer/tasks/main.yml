@@ -1,0 +1,59 @@
+---
+- name: Get IMDSv2 token
+  shell: |
+    curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60"
+  register: imds_token
+
+- name: Get AWS account ID (IMDSv2)
+  shell: |
+    curl -s -H "X-aws-ec2-metadata-token: {{ imds_token.stdout }}" http://169.254.169.254/latest/dynamic/instance-identity/document | grep accountId | awk -F\" '{print $4}'
+  register: account_id
+
+- name: Set S3 bucket name
+  set_fact:
+    s3_bucket: "devops-file-{{ account_id.stdout }}"
+
+- name: Download agent installer from S3
+  aws_s3:
+    bucket: "{{ s3_bucket }}"
+    object: "agent-files/agent-installer.sh"
+    dest: "/tmp/agent-installer.sh"
+    mode: get
+
+- name: Make agent installer executable
+  file:
+    path: "/tmp/agent-installer.sh"
+    mode: '0755'
+
+- name: Install the agent
+  shell: "/tmp/agent-installer.sh"
+  args:
+    creates: /usr/local/bin/agent  # adjust if agent binary path is different
+
+- name: Ensure metric directory exists
+  file:
+    path: /var/lib/node_exporter/textfile_collector
+    state: directory
+    owner: node_exporter
+    group: node_exporter
+    mode: '0755'
+
+- name: Create cron job for agent last check-in metric
+  cron:
+    name: "Agent last check-in metric"
+    user: root
+    job: |
+      now=$(date +%s)
+      last=$(agent --last-checkin | xargs -I{} date -d "{}" +%s)
+      diff=$(( (now - last) / 60 ))
+      echo "agent-last-checkin $diff" > /var/lib/node_exporter/textfile_collector/agent-custome-metric.prom
+
+- name: Ensure node_exporter service uses textfile collector
+  lineinfile:
+    path: /etc/systemd/system/node_exporter.service
+    regexp: '^ExecStart='
+    line: 'ExecStart=/usr/local/bin/node_exporter --collector.textfile.directory=/var/lib/node_exporter/textfile_collector'
+    backup: yes
+  notify:
+    - Reload systemd daemon
+    - Restart node_exporter

@@ -1,0 +1,11 @@
+---
+- name: Post configuration for new EC2 instance
+  hosts: localhost
+  become: yes
+
+  tasks:
+    # ... other post-provisioning tasks can go here ...
+
+    - name: Install agent and setup node_exporter custom metric
+      import_role:
+        name: agent_installer
